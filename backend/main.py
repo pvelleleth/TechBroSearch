@@ -3,22 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import cohere
 from tavily import TavilyClient
 import os
-import asyncio
-from typing import List
-
+from motor.motor_asyncio import AsyncIOMotorClient
 from models.profile import SearchQuery, SearchResponse, Profile
-from tools.github_tool import GitHubTool
-from tools.twitter_tool import TwitterTool
-from services.profile_aggregator import ProfileAggregator
 
 # Initialize clients
 co = cohere.Client(os.getenv('COHERE_API_KEY'))
 tavily = TavilyClient(os.getenv('TAVILY_API_KEY'))
-
-# Initialize tools and services
-github_tool = GitHubTool()
-twitter_tool = TwitterTool()
-profile_aggregator = ProfileAggregator()
+mongo_client = AsyncIOMotorClient(os.getenv('MONGODB_URI'))
+db = mongo_client['hoyahacks']  # Replace with your database name
 
 app = FastAPI()
 
@@ -31,41 +23,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
 @app.post("/search", response_model=SearchResponse)
 async def search_profiles(query: SearchQuery):
     try:
-        # Use Cohere to understand the query
-        response = co.chat(
-            message=f"Analyze this search query and extract key terms for finding relevant profiles: {query.query}",
-            model="command",
-            temperature=0.0
-        )
-        search_terms = response.text
+        # Get embedding for the search query
+        query_embedding = co.embed(
+            texts=[query.query],
+            model="embed-english-v3.0",
+            input_type="search_query"
+        ).embeddings[0]
         
-        # Search profiles using different tools
-        tasks = [
-            github_tool.search_users(search_terms, query.location),
-            twitter_tool.search_users(search_terms, query.location)
+        # Perform vector search in MongoDB
+        processed_collection = db['ProcessedPeople']
+        
+        # Find the most similar profiles using dot product similarity
+        pipeline = [
+            {
+                "$addFields": {
+                    "similarity": {
+                        "$reduce": {
+                            "input": {"$range": [0, {"$size": "$embedding"}]},
+                            "initialValue": 0,
+                            "in": {
+                                "$add": [
+                                    "$$value",
+                                    {"$multiply": [
+                                        {"$arrayElemAt": ["$embedding", "$$this"]},
+                                        {"$arrayElemAt": [query_embedding, "$$this"]}
+                                    ]}
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {"$sort": {"similarity": -1}},
+            {"$limit": 5}
         ]
-        tool_results = await asyncio.gather(*tasks)
         
-        # Get detailed profiles for each result
-        profiles: List[Profile] = []
-        for tool_index, results in enumerate(tool_results):
-            tool_tasks = []
-            for result in results:
-                if tool_index == 0:  # GitHub
-                    tool_tasks.append(github_tool.get_user_details(result["login"]))
-                else:  # Twitter
-                    tool_tasks.append(twitter_tool.get_user_details(result["username"]))
-            
-            tool_profiles = await asyncio.gather(*tool_tasks)
-            profiles.extend([p for p in tool_profiles if p is not None])
+        cursor = processed_collection.aggregate(pipeline)
         
-        # Merge and rank profiles
-        merged_profiles = await profile_aggregator.merge_profiles(profiles, query.query)
+        # Convert MongoDB results to Profile objects
+        profiles = []
+        async for doc in cursor:
+            profile = Profile(
+                name=doc['name'],
+                bio=doc['summary'],
+                confidence_score=float(doc['similarity']),  # Convert from Decimal128
+                sources={"links": doc['links']},
+                skills=[]  # You might want to extract skills from the summary
+            )
+            profiles.append(profile)
         
-        return SearchResponse(profiles=merged_profiles)
+        return SearchResponse(profiles=profiles)
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -73,3 +87,4 @@ async def search_profiles(query: SearchQuery):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
