@@ -7,7 +7,6 @@ tweepy==4.14.0
 tavily-python==0.2.3
 pydantic==2.5.3
 pymongo==4.6.1
-motor==3.3.2
-crawl4ai==0.1.0
 beautifulsoup4==4.12.3
-httpx==0.26.0 
+httpx==0.26.0
+certifi==2024.2.2 

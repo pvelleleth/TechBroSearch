@@ -203,7 +203,7 @@ const SearchSection = () => {
     return (
         <div className="w-full max-w-[1000px] flex flex-col items-center font-inter relative pt-8">
             <h1 className="text-5xl mb-6 text-center font-poppins font-light text-gray-900 tracking-tight">
-                Find Tech Bros
+                Find Your People
             </h1>
 
             <div className="w-full bg-white rounded-lg p-4 shadow-md border border-gray-200">
